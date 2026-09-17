@@ -36,7 +36,17 @@ internal static class DumpIconsCommand
             return;
 
         var installDirectory = parseResult.GetValue(Global.DirectoryArgument)!;
-        var dllPath = Path.Combine(installDirectory.FullName, "Serif.Affinity.dll");
+        var installation = DiscoveryService.FindInstallationPreferring(installDirectory) ?? new AffinityInstallation(
+            installDirectory,
+            new FileInfo(Path.Combine(installDirectory.FullName, "Serif.Affinity.dll")),
+            null,
+            "Serif.Affinity.g.resources",
+            null,
+            null
+        );
+        var dllPath = installation.IconLibrary?.FullName
+            ?? Path.Combine(installDirectory.FullName, "Serif.Affinity.dll");
+        var resourceName = installation.IconResourceName ?? "Serif.Affinity.g.resources";
         var dllBytes = await File.ReadAllBytesAsync(dllPath, cancellationToken);
         using var module = ModuleDefMD.Load(
             dllBytes,
@@ -45,7 +55,7 @@ internal static class DumpIconsCommand
         var disposables = new Disposables();
         using var resourceReader = new ResourceReader(
             module
-                .Resources.FindEmbeddedResource("Serif.Affinity.g.resources")
+                .Resources.FindEmbeddedResource(resourceName)
                 .CreateReader()
                 .AsStream()
                 .DisposeWith(disposables)
@@ -76,7 +86,7 @@ internal static class DumpIconsCommand
             dumpedResourceCount++;
         }
 
-        Console.WriteLine($"Dumped {dumpedResourceCount} resources.");
+        Log.Info($"Dumped {dumpedResourceCount} resources.");
         disposables.Dispose();
     }
 }

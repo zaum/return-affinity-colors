@@ -6,7 +6,7 @@ NOTE: This tool has only been tested on Windows. It runs on .NET 10, so it shoul
 # How to use it
 Download the [`latest release`](https://github.com/ShawnTheBeachy/return-affinity-colors/releases/latest) and run the program with an administrator terminal. The program will automatically look for an existing installation path for Affinity, if one is found it will automatically patch the library in the detected path by default.
 
-From the command prompt, run `rafcol <command> "<installation-path>"`. If you installed Affinity using the EXE and the default settings, the installation path is probably `C:\Program Files\Affinity\Affinity`. If you used the MSIX, the installation path is probably something like `C:\Program Files\WindowsApps\Canva.Affinity_3.0.0.3791_x64__8a0j1tnjnt4a4\App`. So, for example, if you used the EXE your command would be `rafcol "C:\Program Files\Affinity\Affinity"`.
+From the command prompt, run `rafcol <command> "<installation-path>"`. If you installed Affinity using the EXE and the default settings, the installation path is probably `C:\Program Files\Affinity\Affinity`. If you used the MSIX, the installation path is probably something like `C:\Program Files\WindowsApps\Canva.Affinity_<version>_x64__8a0j1tnjnt4a4\App` (the version number changes with every Affinity update). So, for example, if you used the EXE your command would be `rafcol colorize "C:\Program Files\Affinity\Affinity"`.
 
 NOTE: If you installed Affinity using the MSIX you may need to take ownership of the `App` folder and give the `Administrators` group full control permissions before this tool can work.
 
@@ -47,7 +47,7 @@ If you installed Affinity with the MSIX installer, you will need to get permissi
 
    Enter your username and then click "Check names". Click "OK", and then "OK" again.
 
-2. Now you should be able to open the `WindowsApps` folder. Inside it, find the Affinity installation folder. This will probably be something like `Canva.Affinity_3.0.0.3791_x64__8a0j1tnjnt4a4`. Open the folder and right-click on the `App` folder. Follow the same steps as step 1 to take ownership of the `App` folder, but this time be sure to check the "Replace owner on subcontainers and objects" checkbox.
+2. Now you should be able to open the `WindowsApps` folder. Inside it, find the Affinity installation folder. This will probably be something like `Canva.Affinity_<version>_x64__8a0j1tnjnt4a4` (use the folder with the highest version number if several remain after an update). Open the folder and right-click on the `App` folder. Follow the same steps as step 1 to take ownership of the `App` folder, but this time be sure to check the "Replace owner on subcontainers and objects" checkbox.
    
     <img width="1516" height="990" alt="image" src="https://github.com/user-attachments/assets/50a08be4-a644-46cc-8769-6a36d30c4074" />
 

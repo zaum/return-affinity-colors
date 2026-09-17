@@ -11,8 +11,11 @@
     <Authors>Shawn Beachy</Authors>
     <Product>$(AssemblyName)</Product>
     <PackageId>$(AssemblyName)</PackageId>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
   </PropertyGroup>
   <ItemGroup>
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.0" />
+    <PackageReference Include="Avalonia.Themes.Fluent" Version="12.1.0" />
     <PackageReference Include="Crayon" Version="2.0.69" />
     <PackageReference Include="dnlib" Version="4.5.0" />
     <PackageReference Include="Microsoft.Extensions.FileProviders.Embedded" Version="9.0.10" />

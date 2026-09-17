@@ -21,12 +21,15 @@ internal static class ReplaceSplashImageCommand
             field.Options.Add(Global.TerminateOption);
             field.Options.Add(Options.BackupOption);
             field.Options.Add(Options.SplashImageOption);
-            field.SetAction(Execute);
+            field.SetAction((ParseResult pr, CancellationToken ct) => ParseAndExecute(pr, ct));
             return field;
         }
     }
 
-    private static async Task Execute(ParseResult parseResult, CancellationToken cancellationToken)
+    internal static async Task Run(ParseResult parseResult) =>
+        await ParseAndExecute(parseResult, CancellationToken.None);
+
+    private static async Task ParseAndExecute(ParseResult parseResult, CancellationToken cancellationToken)
     {
         if (!CheckCommand.Execute(parseResult))
             return;
@@ -35,12 +38,25 @@ internal static class ReplaceSplashImageCommand
             Global.TerminateAffinity();
 
         var directory = parseResult.GetValue(Global.DirectoryArgument)!;
-        var exePath = Path.Combine(directory.FullName, "Affinity.exe");
+        var installation = DiscoveryService.FindInstallationPreferring(directory) ?? new AffinityInstallation(
+            directory,
+            null,
+            new FileInfo(Path.Combine(directory.FullName, "Affinity.exe")),
+            null,
+            "Affinity.g.resources",
+            "resources/images/splash.imageset/studioprosplash.png"
+        );
+        var exePath = installation.SplashExecutable?.FullName
+            ?? Path.Combine(directory.FullName, "Affinity.exe");
+        var resourceName = installation.SplashResourceName ?? "Affinity.g.resources";
+        var splashImageKey = installation.SplashImageKey
+            ?? "resources/images/splash.imageset/studioprosplash.png";
+        Log.Info($"Patching \"{exePath}\" (resource \"{resourceName}\").");
         var backup = parseResult.GetValue(Options.BackupOption);
 
         if (backup is not null && !new FileInfo(exePath).BackUp(backup))
         {
-            Console.RedLine("Failed to back up current Affinity.exe.");
+            Log.Error("Failed to back up current Affinity executable.");
             return;
         }
 
@@ -51,7 +67,7 @@ internal static class ReplaceSplashImageCommand
             new ModuleCreationOptions(ModuleDef.CreateModuleContext())
         );
         using var resourceReader = new ResourceReader(
-            module.Resources.FindEmbeddedResource("Affinity.g.resources").CreateReader().AsStream()
+            module.Resources.FindEmbeddedResource(resourceName).CreateReader().AsStream()
         );
         var resourcesTempFile = Path.Combine(AppContext.BaseDirectory, Path.GetRandomFileName());
         var resourceWriter = new ResourceWriter(resourcesTempFile);
@@ -60,7 +76,7 @@ internal static class ReplaceSplashImageCommand
         {
             var key = resource.Key.ToString() ?? "";
 
-            if (key != "resources/images/splash.imageset/studioprosplash.png")
+            if (key != splashImageKey)
             {
                 resourceWriter.AddResource(key, resource.Value);
                 continue;
@@ -74,23 +90,34 @@ internal static class ReplaceSplashImageCommand
         }
 
         resourceWriter.Dispose();
-        var resourceIndex = module.Resources.IndexOf("Affinity.g.resources");
+        var resourceIndex = module.Resources.IndexOf(resourceName);
+        if (resourceIndex < 0)
+        {
+            Log.Error($"Could not find embedded resource \"{resourceName}\" in the executable.");
+            File.Delete(resourcesTempFile);
+            return;
+        }
+
         var mergedResourcesFs = new FileStream(resourcesTempFile, FileMode.Open);
         var resBuffer = new Memory<byte>(new byte[mergedResourcesFs.Length]);
         _ = await mergedResourcesFs.ReadAsync(resBuffer, cancellationToken);
         var newResource = new EmbeddedResource(
-            "Affinity.g.resources",
+            resourceName,
             resBuffer.ToArray(),
             ManifestResourceAttributes.Public
         );
         module.Resources[resourceIndex] = newResource;
-        File.Delete(exePath);
-        module.Write(exePath);
+        var replaced = FileOperations.ReplaceWithUpdatedFile(exePath, module.Write);
         await mergedResourcesFs.DisposeAsync();
         File.Delete(resourcesTempFile);
-        Console.WriteLine(
-            $"Updated \"{exePath}\", replacing the startup splash image with \"{splashImage.FullName}\"."
-        );
+
+        if (replaced)
+        {
+            Log.Info(
+                $"Updated \"{exePath}\", replacing the startup splash image with \"{splashImage.FullName}\"."
+            );
+            Log.Success("Finished — splash image was written. Restart Affinity to see it.");
+        }
     }
 
     private static class Options

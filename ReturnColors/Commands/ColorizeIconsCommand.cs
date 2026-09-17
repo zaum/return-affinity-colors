@@ -26,12 +26,15 @@ internal static class ColorizeIconsCommand
             field.Options.Add(Global.TerminateOption);
             field.Options.Add(Options.BackupOption);
             field.Options.Add(Options.PauseOption);
-            field.SetAction(Execute);
+            field.SetAction((ParseResult pr, CancellationToken ct) => ParseAndExecute(pr, ct));
             return field;
         }
     }
 
-    private static async Task Execute(ParseResult parseResult, CancellationToken cancellationToken)
+    internal static async Task Run(ParseResult parseResult) =>
+        await ParseAndExecute(parseResult, CancellationToken.None);
+
+    private static async Task ParseAndExecute(ParseResult parseResult, CancellationToken cancellationToken)
     {
         if (!CheckCommand.Execute(parseResult))
             return;
@@ -41,12 +44,23 @@ internal static class ColorizeIconsCommand
 
         var pause = parseResult.GetValue(Options.PauseOption);
         var directory = parseResult.GetValue(Global.DirectoryArgument)!;
-        var dllPath = Path.Combine(directory.FullName, "Serif.Affinity.dll");
+        var installation = DiscoveryService.FindInstallationPreferring(directory) ?? new AffinityInstallation(
+            directory,
+            new FileInfo(Path.Combine(directory.FullName, "Serif.Affinity.dll")),
+            null,
+            "Serif.Affinity.g.resources",
+            null,
+            null
+        );
+        var dllPath = installation.IconLibrary?.FullName
+            ?? Path.Combine(directory.FullName, "Serif.Affinity.dll");
+        var resourceName = installation.IconResourceName ?? "Serif.Affinity.g.resources";
+        Log.Info($"Patching \"{dllPath}\" (resource \"{resourceName}\").");
         var backup = parseResult.GetValue(Options.BackupOption);
 
         if (backup is not null && !new FileInfo(dllPath).BackUp(backup, pause))
         {
-            Console.RedLine("Failed to back up current Serif.Affinity.dll.");
+            Log.Error("Failed to back up current Serif.Affinity.dll.");
             return;
         }
 
@@ -56,86 +70,61 @@ internal static class ColorizeIconsCommand
             new ModuleCreationOptions(ModuleDef.CreateModuleContext())
         );
         var resourcesTempFile = Path.Combine(AppContext.BaseDirectory, Path.GetRandomFileName());
-        MergeResources(module, resourcesTempFile);
-        await ReplaceResources(module, resourcesTempFile);
+        MergeResources(module, resourcesTempFile, resourceName);
+        await ReplaceResources(module, resourcesTempFile, resourceName);
 
         if (pause)
             Global.Pause();
 
-        SaveDll(module, dllPath);
+        var saved = SaveDll(module, dllPath, resourceName);
         File.Delete(resourcesTempFile);
+
+        if (saved)
+            Log.Success("Finished — colored icons were written. Restart Affinity to see them.");
     }
-
-    private static object? FindV2Resource(string key, ResourceReader v2ResourceReader)
-    {
-        var v2Key = GetV2ResourceKey(key);
-
-        foreach (DictionaryEntry v2Entry in v2ResourceReader)
-            if (v2Entry.Key.ToString() == v2Key)
-                return v2Entry.Value;
-
-        Console.YellowLine($"Failed to resolve v2 resource \"{key}\".");
-        return null;
-    }
-
-    private static string GetV2ResourceKey(string v3ResourceKey) =>
-        v3ResourceKey switch
-        {
-            "resources/icons/tools/brushtool.imageset/paint%20brush%20tool_2.png" =>
-                "resources/icons/tools/brushtool.imageset/paint%20brush%20tool.png",
-            "resources/icons/tools/brushtool.imageset/paint%20brush%20tool@2x_2.png" =>
-                "resources/icons/tools/brushtool.imageset/paint%20brush%20tool@2x.png",
-            "resources/icons/tools/objectselectiontool.imageset/object%20selection%20tool.png" =>
-                "resources/icons/tools/objectselectiontool.imageset/object_selection_tool.png",
-            "resources/icons/tools/objectselectiontool.imageset/object%20selection%20tool@2x.png" =>
-                "resources/icons/tools/objectselectiontool.imageset/object_selection_tool@2x.png",
-            "resources/icons/tools/measuretool.imageset/measure%20tool.png" =>
-                "resources/icons/tools/measuretool.imageset/measuretool.png",
-            "resources/icons/tools/measuretool.imageset/measure%20tool@2x.png" =>
-                "resources/icons/tools/measuretool.imageset/measuretool@2x.png",
-            "resources/icons/tools/strokewidthtool.imageset/line%20width%20tool%20mono.png" =>
-                "resources/icons/tools/strokewidthtool.imageset/line%20width%20tool.png",
-            "resources/icons/tools/strokewidthtool.imageset/line%20width%20tool%20mono@2x.png" =>
-                "resources/icons/tools/strokewidthtool.imageset/line%20width%20tool@2x.png",
-            "resources/icons/tools/inpaintingbrushtool.imageset/inpainting%20tool.png" =>
-                "resources/icons/tools/inpaintingbrushtool.imageset/inpainting%20brush%20tool.png",
-            "resources/icons/tools/inpaintingbrushtool.imageset/inpainting%20tool@2x.png" =>
-                "resources/icons/tools/inpaintingbrushtool.imageset/inpainting%20brush%20tool@2x.png",
-            _ => v3ResourceKey,
-        };
 
     private static ResourceReader GetV2ResourceReader(Disposables disposables)
     {
-        var embeddedFileProvider = new ManifestEmbeddedFileProvider(
-            typeof(ColorizeIconsCommand).Assembly
-        );
+        var assembly = typeof(ColorizeIconsCommand).Assembly;
+        var resourceName = assembly
+            .GetManifestResourceNames()
+            .FirstOrDefault(n =>
+                n.Replace('\\', '/').EndsWith("Serif.Affinity.v2.g.resources", StringComparison.OrdinalIgnoreCase)
+            )
+            ?? throw new InvalidOperationException("Embedded v2 resources file was not found.");
+
         return new ResourceReader(
-            embeddedFileProvider
-                .GetFileInfo("res/Serif.Affinity.v2.g.resources")
-                .CreateReadStream()
+            assembly
+                .GetManifestResourceStream(resourceName)!
                 .DisposeWith(disposables)
         );
     }
 
     private static ResourceReader GetV3ResourceReader(
         ModuleDefMD module,
-        Disposables disposables
+        Disposables disposables,
+        string resourceName
     ) =>
         new(
             module
-                .Resources.FindEmbeddedResource("Serif.Affinity.g.resources")
+                .Resources.FindEmbeddedResource(resourceName)
                 .CreateReader()
                 .AsStream()
                 .DisposeWith(disposables)
         );
 
-    private static void MergeResources(ModuleDefMD module, string resourcesFile)
+    private static void MergeResources(ModuleDefMD module, string resourcesFile, string resourceName)
     {
         File.Delete(resourcesFile);
         Disposables disposables = [];
         using var v2ResourceReader = GetV2ResourceReader(disposables);
-        using var v3ResourceReader = GetV3ResourceReader(module, disposables);
+        using var v3ResourceReader = GetV3ResourceReader(module, disposables, resourceName);
+        // Build the v2 lookup once instead of once per icon (there are
+        // thousands of icons, so rebuilding it per key is very slow).
+        var v2Index = IconKeyMatcher.BuildIndex(v2ResourceReader);
         var mergedResourcesWriter = new ResourceWriter(resourcesFile);
+        var mergedCount = 0;
+        var keptCount = 0;
 
         foreach (DictionaryEntry v3Entry in v3ResourceReader)
         {
@@ -143,11 +132,7 @@ internal static class ColorizeIconsCommand
 
             if (
                 !key.EndsWith(".png")
-                || (
-                    !key.StartsWith("resources/icons/tools/")
-                    && !key.StartsWith("resources/icons/colourpicker.imageset")
-                    && !key.StartsWith("resources/icons/formatdropper.imageset")
-                )
+                || !key.StartsWith("resources/icons/")
             )
             {
                 mergedResourcesWriter.AddResource(key, v3Entry.Value);
@@ -156,49 +141,81 @@ internal static class ColorizeIconsCommand
 
             try
             {
-                var v2Resource = FindV2Resource(key, v2ResourceReader);
+                var v2Resource = IconKeyMatcher.FindV2Resource(key, v2Index);
                 mergedResourcesWriter.AddResource(key, v2Resource ?? v3Entry.Value);
-                Console.GreenLine($"Merged v2 resource \"{key}\".");
+                if (v2Resource is not null)
+                {
+                    mergedCount++;
+                    Log.Warning($"Merged v2 resource \"{key}\".");
+                }
+                else
+                {
+                    keptCount++;
+                }
             }
             catch (Exception exception)
             {
-                Console.RedLine($"Failed to merge v2 resource \"{key}\".");
-                Console.RedLine(exception.Message);
+                Log.Error($"Failed to merge v2 resource \"{key}\".");
+                Log.Error(exception.Message);
                 mergedResourcesWriter.AddResource(key, v3Entry.Value);
+                keptCount++;
             }
+        }
+
+        Log.Info($"Replaced {mergedCount} icons with v2 versions, kept {keptCount} originals.");
+        if (mergedCount == 0)
+        {
+            Log.Warning(
+                "No icons were replaced. The installed Affinity version probably renamed its "
+                + "icon resources; run \"dump icons\" and compare the key names, then update "
+                + "IconKeyMatcher with the new mappings."
+            );
         }
 
         mergedResourcesWriter.Dispose();
         disposables.Dispose();
     }
 
-    private static async ValueTask ReplaceResources(ModuleDefMD module, string resourcesFile)
+    private static async ValueTask ReplaceResources(ModuleDefMD module, string resourcesFile, string resourceName)
     {
-        var resourceIndex = module.Resources.IndexOf("Serif.Affinity.g.resources");
+        var resourceIndex = module.Resources.IndexOf(resourceName);
+        if (resourceIndex < 0)
+        {
+            Log.Error($"Could not find embedded resource \"{resourceName}\" in the library.");
+            return;
+        }
+
         await using var mergedResourcesFs = new FileStream(resourcesFile, FileMode.Open);
         var buffer = new Memory<byte>(new byte[mergedResourcesFs.Length]);
         await mergedResourcesFs.ReadExactlyAsync(buffer);
         var newResource = new EmbeddedResource(
-            "Serif.Affinity.g.resources",
+            resourceName,
             buffer.ToArray(),
             ManifestResourceAttributes.Public
         );
         module.Resources[resourceIndex] = newResource;
     }
 
-    private static void SaveDll(ModuleDefMD module, string path)
+    private static bool SaveDll(ModuleDefMD module, string path, string resourceName)
     {
-        File.Delete(path);
+        var replaced = FileOperations.ReplaceWithUpdatedFile(
+            path,
+            tempPath =>
+            {
+                if (module.IsILOnly)
+                    module.Write(tempPath);
+                else
+                {
+                    var writerOptions = new NativeModuleWriterOptions(module, false);
+                    module.NativeWrite(tempPath, writerOptions);
+                }
+            }
+        );
 
-        if (module.IsILOnly)
-            module.Write(path);
-        else
-        {
-            var writerOptions = new NativeModuleWriterOptions(module, false);
-            module.NativeWrite(path, writerOptions);
-        }
+        if (replaced)
+            Log.Info($"Updated \"{path}\", replacing monochrome icons with colored icons.");
 
-        Console.WriteLine($"Updated \"{path}\", replacing monochrome icons with colored icons.");
+        return replaced;
     }
 
     private static class Options

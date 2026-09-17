@@ -31,7 +31,17 @@ internal static class ImportIconsCommand
         if (!CheckCommand.Execute(installDirectory))
             return;
 
-        var dllPath = Path.Combine(installDirectory.FullName, "Serif.Affinity.dll");
+        var installation = DiscoveryService.FindInstallationPreferring(installDirectory) ?? new AffinityInstallation(
+            installDirectory,
+            new FileInfo(Path.Combine(installDirectory.FullName, "Serif.Affinity.dll")),
+            null,
+            "Serif.Affinity.g.resources",
+            null,
+            null
+        );
+        var dllPath = installation.IconLibrary?.FullName
+            ?? Path.Combine(installDirectory.FullName, "Serif.Affinity.dll");
+        var resourceName = installation.IconResourceName ?? "Serif.Affinity.g.resources";
         var dllBytes = await File.ReadAllBytesAsync(dllPath, cancellationToken);
         using var module = ModuleDefMD.Load(
             dllBytes,
@@ -40,8 +50,8 @@ internal static class ImportIconsCommand
         var inputDirectory = parseResult.GetRequiredValue(
             ImportCommand.Options.ResourcesDirectoryOption
         );
-        var mergedResourcesFile = MergeResources(module, inputDirectory);
-        var resourceIndex = module.Resources.IndexOf("Serif.Affinity.g.resources");
+        var mergedResourcesFile = MergeResources(module, inputDirectory, resourceName);
+        var resourceIndex = module.Resources.IndexOf(resourceName);
         var mergedResourcesFs = new FileStream(
             mergedResourcesFile.FullName,
             FileMode.Open,
@@ -51,13 +61,16 @@ internal static class ImportIconsCommand
         await mergedResourcesFs.ReadExactlyAsync(buffer, cancellationToken);
         await mergedResourcesFs.DisposeAsync();
         var newResource = new EmbeddedResource(
-            "Serif.Affinity.g.resources",
+            resourceName,
             buffer.ToArray(),
             ManifestResourceAttributes.Public
         );
         module.Resources[resourceIndex] = newResource;
-        SaveDll(module, dllPath);
+        var saved = SaveDll(module, dllPath, resourceName);
         mergedResourcesFile.Delete();
+
+        if (saved)
+            Log.Success("Finished — custom icons were written. Restart Affinity to see them.");
     }
 
     private static FileStream? FindCustomResource(string resourceKey, DirectoryInfo inputDirectory)
@@ -68,12 +81,12 @@ internal static class ImportIconsCommand
         return !file.Exists ? null : file.OpenRead();
     }
 
-    private static FileInfo MergeResources(ModuleDefMD module, DirectoryInfo inputDirectory)
+    private static FileInfo MergeResources(ModuleDefMD module, DirectoryInfo inputDirectory, string resourceName)
     {
         var disposables = new Disposables();
         using var affinityResourceReader = new ResourceReader(
             module
-                .Resources.FindEmbeddedResource("Serif.Affinity.g.resources")
+                .Resources.FindEmbeddedResource(resourceName)
                 .CreateReader()
                 .AsStream()
                 .DisposeWith(disposables)
@@ -107,18 +120,25 @@ internal static class ImportIconsCommand
         return new FileInfo(resourcesTempFile);
     }
 
-    private static void SaveDll(ModuleDefMD module, string path)
+    private static bool SaveDll(ModuleDefMD module, string path, string resourceName)
     {
-        File.Delete(path);
+        var replaced = FileOperations.ReplaceWithUpdatedFile(
+            path,
+            tempPath =>
+            {
+                if (module.IsILOnly)
+                    module.Write(tempPath);
+                else
+                {
+                    var writerOptions = new NativeModuleWriterOptions(module, false);
+                    module.NativeWrite(tempPath, writerOptions);
+                }
+            }
+        );
 
-        if (module.IsILOnly)
-            module.Write(path);
-        else
-        {
-            var writerOptions = new NativeModuleWriterOptions(module, false);
-            module.NativeWrite(path, writerOptions);
-        }
+        if (replaced)
+            Log.Info($"Updated \"{path}\", importing custom icons.");
 
-        Console.WriteLine($"Updated \"{path}\", importing custom icons.");
+        return replaced;
     }
 }

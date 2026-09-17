@@ -49,8 +49,19 @@ internal static class Global
         if (!OperatingSystem.IsWindows())
             return null;
 
-        var affinityKey = Registry.LocalMachine.OpenSubKey(@"Software\Serif\Affinity\Affinity");
-        return (string?)affinityKey?.GetValue("Affinity Install Path");
+        // v2 installs register under Serif, newer Canva builds under Canva.
+        string[] keyPaths = [@"Software\Serif\Affinity\Affinity", @"Software\Canva\Affinity\Affinity"];
+        foreach (var keyPath in keyPaths)
+        {
+            foreach (var hive in new[] { Registry.LocalMachine, Registry.CurrentUser })
+            {
+                var path = (string?)hive.OpenSubKey(keyPath)?.GetValue("Affinity Install Path");
+                if (!string.IsNullOrEmpty(path) && Directory.Exists(path))
+                    return path;
+            }
+        }
+
+        return null;
     }
 
     public static void Pause()
